@@ -8,9 +8,9 @@ server:
 
 db:
   driverClass: org.postgresql.Driver
-  url: jdbc:postgresql://postgres-airflow:5432/airflow
-  user: airflow
-  password: airflow
+  url: jdbc:postgresql://postgres-marquez:5432/marquez
+  user: marquez
+  password: marquez
 
 logging:
   level: INFO

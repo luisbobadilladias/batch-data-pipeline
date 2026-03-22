@@ -28,7 +28,7 @@ x-airflow-common: &airflow-common
     
     PYTHONPATH: /opt/airflow
   # S3 credentials for DuckDB/MinIO access (move to .env for security)
-    S3_ENDPOINT: minio:9000
+    S3_ENDPOINT: pipeline-minio:9000
     S3_ACCESS_KEY: minioadmin
     S3_SECRET_KEY: minioadmin
   volumes:
@@ -56,7 +56,6 @@ services:
       - "5433:5432"
     volumes:
       - airflow-db-volume:/var/lib/postgresql/data
-      - ./docker/marquez/init-marquez-db.sh:/docker-entrypoint-initdb.d/init-marquez-db.sh
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 10s
@@ -66,9 +65,29 @@ services:
     networks:
       - airflow-network
 
+  postgres-marquez:
+    image: postgres:14
+    container_name: postgres-marquez
+    environment:
+      POSTGRES_USER: marquez
+      POSTGRES_PASSWORD: marquez
+      POSTGRES_DB: marquez
+    ports:
+      - "5434:5432"
+    volumes:
+      - marquez-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "marquez"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+    networks:
+      - airflow-network
+
   minio:
     image: minio/minio
-    container_name: minio
+    container_name: pipeline-minio
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -91,14 +110,14 @@ services:
 
   mc:
     image: minio/mc
-    container_name: mc
+    container_name: pipeline-mc
     depends_on:
       - minio
     networks:
       - airflow-network
     entrypoint: >
       /bin/sh -c "
-      until (/usr/bin/mc alias set minio http://minio:9000 minioadmin minioadmin) do echo '...waiting...' && sleep 1; done;
+      until (/usr/bin/mc alias set minio http://pipeline-minio:9000 minioadmin minioadmin) do echo '...waiting...' && sleep 1; done;
       /usr/bin/mc mb minio/bronze;
       /usr/bin/mc mb minio/silver;
       /usr/bin/mc mb minio/gold;
@@ -110,16 +129,17 @@ services:
 
   marquez:
     image: marquezproject/marquez:latest
-    container_name: marquez
+    platform: linux/amd64
+    container_name: pipeline-marquez
     ports:
-      - "5000:5000"
-      - "5001:5001"
+      - "5010:5000"
+      - "5011:5001"
     environment:
       MARQUEZ_CONFIG: /usr/src/app/marquez.yml
     volumes:
       - ./docker/marquez/marquez.yml:/usr/src/app/marquez.yml
     depends_on:
-      postgres-airflow:
+      postgres-marquez:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/api/v1/namespaces"]
@@ -133,7 +153,8 @@ services:
 
   marquez-web:
     image: marquezproject/marquez-web:latest
-    container_name: marquez-web
+    platform: linux/amd64
+    container_name: pipeline-marquez-web
     ports:
       - "3002:3000"  # Using 3002 since 3000 is Metabase, 3001 is Grafana
     environment:
@@ -221,7 +242,7 @@ services:
   metabase:
     build:
       context: ./docker/metabase
-    container_name: metabase
+    container_name: pipeline-metabase
     ports:
       - "3000:3000"
     depends_on:
@@ -236,7 +257,7 @@ services:
 
   metabase-setup:
     image: alpine:3.21
-    container_name: metabase-setup
+    container_name: pipeline-metabase-setup
     networks:
       - airflow-network
     depends_on:
@@ -258,7 +279,7 @@ services:
 
   trino:
     image: trinodb/trino:latest
-    container_name: trino
+    container_name: pipeline-trino
     ports:
       - "8081:8081"
     volumes:
@@ -279,7 +300,7 @@ services:
 
   trino-init:
     image: trinodb/trino:latest
-    container_name: trino-init
+    container_name: pipeline-trino-init
     depends_on:
       - trino
       - minio
@@ -295,7 +316,7 @@ services:
       done &&
       echo 'Waiting for Gold tables in MinIO...' &&
       for i in \$$(seq 1 60); do
-        HTTP_CODE=\$$(curl -s -o /dev/null -w '%{http_code}' http://minio:9000/gold/daily_sales_summary/_delta_log/00000000000000000000.json);
+        HTTP_CODE=\$$(curl -s -o /dev/null -w '%{http_code}' http://pipeline-minio:9000/gold/daily_sales_summary/_delta_log/00000000000000000000.json);
         if [ \"\$$HTTP_CODE\" = \"200\" ]; then
           echo 'Gold tables found!' &&
           break;
@@ -314,7 +335,7 @@ services:
   
   statsd-exporter:
     image: prom/statsd-exporter:v0.26.0
-    container_name: statsd-exporter
+    container_name: pipeline-statsd-exporter
     ports:
       - "9102:9102"  # Prometheus metrics endpoint
       - "9125:9125/udp"  # StatsD UDP port
@@ -335,7 +356,7 @@ services:
 
   prometheus:
     image: prom/prometheus:latest
-    container_name: prometheus
+    container_name: pipeline-prometheus
     ports:
       - "9090:9090"
     volumes:
@@ -353,7 +374,7 @@ services:
       
   prometheus-pushgateway:
     image: prom/pushgateway:latest
-    container_name: prometheus-pushgateway
+    container_name: pipeline-prometheus-pushgateway
     ports:
       - "9091:9091"
     healthcheck:
@@ -368,7 +389,7 @@ services:
 
   grafana:
     image: grafana/grafana:latest
-    container_name: grafana
+    container_name: pipeline-grafana
     ports:
       - "3001:3000"
     environment:
@@ -389,6 +410,7 @@ services:
 
 volumes:
   airflow-db-volume:
+  marquez-db-volume:
   minio_data:
   prometheus-data:
   grafana-data:
